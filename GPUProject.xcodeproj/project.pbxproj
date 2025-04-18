@@ -6,6 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A2BDB9252DB096E3006DFEA4 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2BDB9242DB096E3006DFEA4 /* Foundation.framework */; };
+		A2BDB9272DB096EA006DFEA4 /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2BDB9262DB096EA006DFEA4 /* QuartzCore.framework */; };
+		A2BDB9292DB096F1006DFEA4 /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A2BDB9282DB096F1006DFEA4 /* Metal.framework */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		A2BDB9152DB08BB0006DFEA4 /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -19,7 +25,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
-		A2BDB9172DB08BB0006DFEA4 /* GPUProject */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = GPUProject; sourceTree = BUILT_PRODUCTS_DIR; };
+		A23767942DB1DAFE001C2CB5 /* input.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = input.png; sourceTree = "<group>"; };
+		A237679E2DB2246D001C2CB5 /* GPUProject */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; name = GPUProject; path = /Users/arvin/Development/GPUProject/build/Debug/GPUProject; sourceTree = "<absolute>"; };
+		A2BDB9242DB096E3006DFEA4 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = System/Library/Frameworks/Foundation.framework; sourceTree = SDKROOT; };
+		A2BDB9262DB096EA006DFEA4 /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
+		A2BDB9282DB096F1006DFEA4 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -35,6 +45,9 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A2BDB9292DB096F1006DFEA4 /* Metal.framework in Frameworks */,
+				A2BDB9272DB096EA006DFEA4 /* QuartzCore.framework in Frameworks */,
+				A2BDB9252DB096E3006DFEA4 /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -45,16 +58,19 @@
 			isa = PBXGroup;
 			children = (
 				A2BDB9192DB08BB0006DFEA4 /* GPUProject */,
-				A2BDB9182DB08BB0006DFEA4 /* Products */,
+				A2BDB9232DB096E3006DFEA4 /* Frameworks */,
+				A23767942DB1DAFE001C2CB5 /* input.png */,
 			);
 			sourceTree = "<group>";
 		};
-		A2BDB9182DB08BB0006DFEA4 /* Products */ = {
+		A2BDB9232DB096E3006DFEA4 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
-				A2BDB9172DB08BB0006DFEA4 /* GPUProject */,
+				A2BDB9282DB096F1006DFEA4 /* Metal.framework */,
+				A2BDB9262DB096EA006DFEA4 /* QuartzCore.framework */,
+				A2BDB9242DB096E3006DFEA4 /* Foundation.framework */,
 			);
-			name = Products;
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -67,6 +83,7 @@
 				A2BDB9132DB08BB0006DFEA4 /* Sources */,
 				A2BDB9142DB08BB0006DFEA4 /* Frameworks */,
 				A2BDB9152DB08BB0006DFEA4 /* CopyFiles */,
+				A23767972DB22151001C2CB5 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -79,7 +96,7 @@
 			packageProductDependencies = (
 			);
 			productName = GPUProject;
-			productReference = A2BDB9172DB08BB0006DFEA4 /* GPUProject */;
+			productReference = A237679E2DB2246D001C2CB5 /* GPUProject */;
 			productType = "com.apple.product-type.tool";
 		};
 /* End PBXNativeTarget section */
@@ -93,6 +110,7 @@
 				TargetAttributes = {
 					A2BDB9162DB08BB0006DFEA4 = {
 						CreatedOnToolsVersion = 16.3;
+						LastSwiftMigration = 1630;
 					};
 				};
 			};
@@ -106,7 +124,7 @@
 			mainGroup = A2BDB90E2DB08BB0006DFEA4;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = A2BDB9182DB08BB0006DFEA4 /* Products */;
+			productRefGroup = A2BDB90E2DB08BB0006DFEA4;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -114,6 +132,16 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A23767972DB22151001C2CB5 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A2BDB9132DB08BB0006DFEA4 /* Sources */ = {
@@ -179,6 +207,10 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/lib/metal-cpp",
+					"$(PROJECT_DIR)/lib/stb",
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.3;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
@@ -235,6 +267,10 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/lib/metal-cpp",
+					"$(PROJECT_DIR)/lib/stb",
+				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.3;
 				MTL_ENABLE_DEBUG_INFO = NO;
@@ -246,20 +282,25 @@
 		A2BDB91F2DB08BB0006DFEA4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = TWK6GDPG5S;
 				ENABLE_HARDENED_RUNTIME = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
 		};
 		A2BDB9202DB08BB0006DFEA4 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = TWK6GDPG5S;
 				ENABLE_HARDENED_RUNTIME = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
