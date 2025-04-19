@@ -6,7 +6,15 @@ This project aims to implement an image processing pipeline using Metal framewor
 
 The current version provides a basic demonstration by taking an `input.png` file, running a simple grayscale kernel, and saving the grayscale image to `output.png`.
 
-Steps to run the program:
+### Contents/structure:
+- `GPUProject.xcodeproj` Xcode project data
+- `GPUProject` program and kernel code:
+  - `main.cpp` program code (C++)
+  - `ProjectKernels.metal` kernel code (Metal Shading Language, based on C++)
+- `lib` contains `metal-cpp` (the Metal interface for C++), as well as `stb` libraries for loading/saving image files.
+
+
+### Steps to run the program:
 
 (Tested on macOS 15.4, Xcode 16.3)
 
