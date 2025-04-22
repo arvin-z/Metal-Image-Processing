@@ -50,5 +50,5 @@ Program ended with exit code: 0
 Before and after:
 
 
-![input image](https://cdn.discordapp.com/attachments/307290656286441473/1363043086040826007/input.png?ex=6804984b&is=680346cb&hm=aef6ae5e76cae2f53cc476b75eb4f8705b3509fac80e8aa39ee86e8db0c540ee&) ![output image](https://cdn.discordapp.com/attachments/307290656286441473/1363043086363529337/output.png?ex=6804984b&is=680346cb&hm=a71d2a56bfc23d0a2b3b81afcf1533ea6798316376dabce259b1deddd94fb404&)
+![input image](https://github.com/arvin-z/Metal-Image-Processing/blob/dad1cccad438681d5fbb2b2b878f515cdc611fcd/input.png) ![output image](https://github.com/arvin-z/Metal-Image-Processing/blob/dad1cccad438681d5fbb2b2b878f515cdc611fcd/output.png)
 
