@@ -11,6 +11,12 @@
 #include <string>
 #include <stdexcept>
 #include <memory>
+#include <filesystem>
+#include <map>
+#include <variant>
+#include <algorithm>
+#include <sstream>
+#include <chrono>     // For timing
 
 
 // stb (external C library for simple image loading/saving)
@@ -27,6 +33,100 @@
 #include <Foundation/Foundation.hpp> // Basic types used by Metal (strings, errors, etc.)
 #include <Metal/Metal.hpp>           // Core Metal API (devices, commands, buffers, textures, shaders)
 #include <QuartzCore/QuartzCore.hpp> // Provides display integration (not used in this project)
+
+// cxxopts for command line parsing
+#include <cxxopts.hpp>
+
+
+// KERNEL INFO
+// struct to hold data needed for convolution kernels
+struct ConvolutionInfo {
+    std::vector<float> matrix;
+    int dimension;
+    std::string metalKernelName = "k_convolve"; // Most convolutions use the generic kernel
+};
+
+// Define standard convolution matrices
+const std::vector<float> GAUSSIAN_BLUR_3X3_MATRIX = {
+    1.0f/16.0f, 2.0f/16.0f, 1.0f/16.0f,
+    2.0f/16.0f, 4.0f/16.0f, 2.0f/16.0f,
+    1.0f/16.0f, 2.0f/16.0f, 1.0f/16.0f
+};
+
+const std::vector<float> SHARPEN_3X3_MATRIX = {
+     0.0f, -1.0f,  0.0f,
+    -1.0f,  5.0f, -1.0f,
+     0.0f, -1.0f,  0.0f
+};
+
+struct SimpleKernelInfo {
+     std::string metalKernelName;
+};
+
+// Use std::variant to hold info for different kernel types
+using KernelInfo = std::variant<SimpleKernelInfo, ConvolutionInfo>;
+
+// Define the kernel name used for benchmarking
+const std::string BENCHMARK_KERNEL_USER_NAME = "gaussian_blur_3x3";
+
+// Map CLI kernel names to their info and Metal function names
+std::map<std::string, KernelInfo> KERNEL_REGISTRY = {
+    {"grayscale",         SimpleKernelInfo{"k_grayscale"}},
+    {BENCHMARK_KERNEL_USER_NAME, ConvolutionInfo{GAUSSIAN_BLUR_3X3_MATRIX, 3}},
+    {"sharpen_3x3",       ConvolutionInfo{SHARPEN_3X3_MATRIX, 3}},
+    {"edge_detect",       SimpleKernelInfo{"k_edge_detect"}}
+    // could add more
+};
+
+// Helper function to split string by delimiter
+std::vector<std::string> split(const std::string& s, char delimiter) {
+   std::vector<std::string> tokens;
+   std::string token;
+   std::istringstream tokenStream(s);
+   while (std::getline(tokenStream, token, delimiter)) {
+      // Remove leading/trailing whitespace from token if necessary
+      size_t first = token.find_first_not_of(' ');
+      if (std::string::npos == first) continue; // Skip empty tokens or tokens with only spaces
+      size_t last = token.find_last_not_of(' ');
+      tokens.push_back(token.substr(first, (last - first + 1)));
+   }
+   return tokens;
+}
+
+
+// === CPU Implementation for Gaussian Blur 3x3 ===
+void cpuGaussianBlur3x3(std::vector<unsigned char>& imageData, int width, int height) {
+    if (imageData.empty() || width <= 0 || height <= 0) {
+        throw std::invalid_argument("Invalid image data for CPU Gaussian Blur.");
+    }
+    const int channels = 4;
+    std::vector<unsigned char> tempImageData = imageData; // Work on a copy
+    const auto& kernelMatrix = GAUSSIAN_BLUR_3X3_MATRIX;
+    const int kernelDim = 3;
+    const int kernelRadius = kernelDim / 2;
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            float sumR = 0.0f, sumG = 0.0f, sumB = 0.0f;
+            for (int ky = -kernelRadius; ky <= kernelRadius; ++ky) {
+                for (int kx = -kernelRadius; kx <= kernelRadius; ++kx) {
+                    int pixelX = std::min(std::max(x + kx, 0), width - 1);
+                    int pixelY = std::min(std::max(y + ky, 0), height - 1);
+                    size_t neighborIndex = (static_cast<size_t>(pixelY) * width + pixelX) * channels;
+                    float weight = kernelMatrix[(ky + kernelRadius) * kernelDim + (kx + kernelRadius)];
+                    sumR += static_cast<float>(tempImageData[neighborIndex + 0]) * weight;
+                    sumG += static_cast<float>(tempImageData[neighborIndex + 1]) * weight;
+                    sumB += static_cast<float>(tempImageData[neighborIndex + 2]) * weight;
+                }
+            }
+            size_t currentIndex = (static_cast<size_t>(y) * width + x) * channels;
+            imageData[currentIndex + 0] = static_cast<unsigned char>(std::min(std::max(sumR, 0.0f), 255.0f));
+            imageData[currentIndex + 1] = static_cast<unsigned char>(std::min(std::max(sumG, 0.0f), 255.0f));
+            imageData[currentIndex + 2] = static_cast<unsigned char>(std::min(std::max(sumB, 0.0f), 255.0f));
+            imageData[currentIndex + 3] = tempImageData[currentIndex + 3]; // Preserve alpha
+        }
+    }
+}
 
 
 // === Metal Memory Management EXplanation ===
@@ -218,11 +318,33 @@ NS::SharedPtr<MTL::ComputePipelineState> setupPipelineState(NS::SharedPtr<MTL::D
 }
 
 
-// this function encodes commands to execute the kernel and waits for completion
-void runSampleKernel(NS::SharedPtr<MTL::Device> pDevice, // Accepts SharedPtrs
-                          NS::SharedPtr<MTL::ComputePipelineState> pPSO,
-                          NS::SharedPtr<MTL::Texture> pInputTexture,
-                          NS::SharedPtr<MTL::Texture> pOutputTexture)
+// Creates a sampler state for texture sampling in kernels
+NS::SharedPtr<MTL::SamplerState> createSamplerState(NS::SharedPtr<MTL::Device> pDevice) {
+     MTL::SamplerDescriptor* pRawDesc = MTL::SamplerDescriptor::alloc()->init();
+     NS::SharedPtr<MTL::SamplerDescriptor> pDesc = NS::TransferPtr(pRawDesc);
+
+     pDesc->setMinFilter(MTL::SamplerMinMagFilterLinear);
+     pDesc->setMagFilter(MTL::SamplerMinMagFilterLinear);
+     pDesc->setSAddressMode(MTL::SamplerAddressModeClampToEdge); // Horizontal wrap mode
+     pDesc->setTAddressMode(MTL::SamplerAddressModeClampToEdge); // Vertical wrap mode
+     pDesc->setNormalizedCoordinates(true); // Use coords 0.0-1.0
+
+     MTL::SamplerState* pRawState = pDevice->newSamplerState(pDesc.get());
+     NS::SharedPtr<MTL::SamplerState> pState = NS::TransferPtr(pRawState);
+     if (!pState) {
+         throw std::runtime_error("Failed to create sampler state.");
+     }
+     return pState;
+}
+
+
+// this function encodes commands to execute compute kernels and waits for completion
+void runComputeKernel(NS::SharedPtr<MTL::Device> pDevice,
+                      NS::SharedPtr<MTL::ComputePipelineState> pPSO,
+                      NS::SharedPtr<MTL::Texture> pInputTexture,
+                      NS::SharedPtr<MTL::Texture> pOutputTexture,
+                      NS::SharedPtr<MTL::SamplerState> pSamplerState, // Can be null if not needed
+                      const ConvolutionInfo* pConvInfo)               // Can be null if not needed
 {
     if (!pDevice || !pPSO || !pInputTexture || !pOutputTexture) {
         throw std::invalid_argument("Invalid arguments provided for kernel execution.");
@@ -231,23 +353,22 @@ void runSampleKernel(NS::SharedPtr<MTL::Device> pDevice, // Accepts SharedPtrs
     // Create Command Queue
     // this creates 1 queue. If we need parallel submissions, we can have more queues.
     // similar to OpenCL command queue.
-    MTL::CommandQueue* pRawQueue = pDevice->newCommandQueue();
-    NS::SharedPtr<MTL::CommandQueue> pCommandQueue = NS::TransferPtr(pRawQueue);
-    if (!pCommandQueue) {
-        throw std::runtime_error("Failed to create Metal command queue.");
-    }
+    NS::SharedPtr<MTL::CommandQueue> pCommandQueue = NS::TransferPtr(pDevice->newCommandQueue());
+    if (!pCommandQueue) { throw std::runtime_error("Failed to create Metal command queue."); }
+
     
     // Objective-C memory management
     // by creating a Autorelease Pool, it ensures objects like command buffers and command encoders
     // are cleaned up properly after kernel execution
-    NS::AutoreleasePool* pLocalPool = NS::AutoreleasePool::alloc()->init();
-    if (!pLocalPool) {
-        throw std::runtime_error("Failed to create local autorelease pool for command buffer/encoder.");
-    }
+    NS::AutoreleasePool* pLocalPool = NS::AutoreleasePool::alloc()->init(); // For temp objects like buffer/encoder
+    if (!pLocalPool) { throw std::runtime_error("Failed to create local autorelease pool."); }
+
     
     MTL::CommandBuffer* pCmdBuffer = nullptr;
     MTL::CommandBufferStatus status = MTL::CommandBufferStatusNotEnqueued; // Track status
     NS::SharedPtr<NS::Error> pError;
+    NS::SharedPtr<MTL::Buffer> pKernelMatrixBuffer; // Hold buffers within this scope
+    NS::SharedPtr<MTL::Buffer> pKernelDimBuffer;
     
     try {
         // Create Command Buffer
@@ -269,6 +390,33 @@ void runSampleKernel(NS::SharedPtr<MTL::Device> pDevice, // Accepts SharedPtrs
         // setTexture(texture, index) maps the texture to `texture<float, access::read>` at texture(index) in the kernel
         pCmdEncoder->setTexture(pInputTexture.get(), 0);  // Bind input texture to index 0
         pCmdEncoder->setTexture(pOutputTexture.get(), 1); // Bind output texture to index 1
+        
+        // Set sampler state if provided (needed for k_convolve, k_edge_detect)
+        if (pSamplerState) {
+             pCmdEncoder->setSamplerState(pSamplerState.get(), 0); // Sampler at index 0
+        }
+        
+        // Set convolution kernel buffer if provided (needed for k_convolve)
+        if (pConvInfo) {
+            if (pConvInfo->matrix.empty()) {
+                 throw std::runtime_error("ConvolutionInfo provided but matrix is empty.");
+            }
+            // Create buffer for the matrix
+             pKernelMatrixBuffer = NS::TransferPtr(pDevice->newBuffer(pConvInfo->matrix.data(),
+                                                                      pConvInfo->matrix.size() * sizeof(float),
+                                                                      MTL::ResourceStorageModeShared)); // Shared memory is efficient on UMA
+             if (!pKernelMatrixBuffer) throw std::runtime_error("Failed to create buffer for kernel matrix.");
+
+             // Create buffer for the dimension
+             pKernelDimBuffer = NS::TransferPtr(pDevice->newBuffer(&pConvInfo->dimension,
+                                                                    sizeof(int),
+                                                                    MTL::ResourceStorageModeShared));
+             if (!pKernelDimBuffer) throw std::runtime_error("Failed to create buffer for kernel dimension.");
+
+             // Bind buffers to the kernel function arguments
+             pCmdEncoder->setBuffer(pKernelMatrixBuffer.get(), 0, 0); // Matrix at buffer index 0
+             pCmdEncoder->setBuffer(pKernelDimBuffer.get(), 0, 1);    // Dimension at buffer index 1
+        }
         
         // Dispatch Threads (Kernel Launch Configuration)
         // (would be like <<<gridSize, blockSize>>> in CUDA)
@@ -306,19 +454,14 @@ void runSampleKernel(NS::SharedPtr<MTL::Device> pDevice, // Accepts SharedPtrs
         if (status == MTL::CommandBufferStatusError) {
             std::cerr << "  Command buffer execution failed!" << std::endl;
             NS::Error* pRawCmdError = pCmdBuffer->error();
-            if(pRawCmdError) {
-                // Retain the error object, so pool doesn't releases it
-                pError = NS::TransferPtr(pRawCmdError->retain());
-            }
+            if(pRawCmdError) { pError = NS::TransferPtr(pRawCmdError->retain()); } // Retain error
         }
     } catch (const std::exception& e) {
         std::cerr << "  Exception during kernel encoding/submission: " << e.what() << std::endl;
-        pLocalPool->release();
-        throw;
+        pLocalPool->release(); throw; // Rethrow after releasing pool
     } catch (...) {
         std::cerr << "  Unknown exception during kernel encoding/submission." << std::endl;
-        pLocalPool->release();
-        throw std::runtime_error("Unknown error occurred during kernel execution.");
+        pLocalPool->release(); throw std::runtime_error("Unknown error during kernel execution.");
     }
     
     // release the pool. This destroys the pool object and sends a release message
@@ -326,11 +469,10 @@ void runSampleKernel(NS::SharedPtr<MTL::Device> pDevice, // Accepts SharedPtrs
     pLocalPool->release();
     
     if (pError) {
-        std::string errorMsg = "CommandBuffer execution failed.";
-        errorMsg += " Error: " + std::string(pError->localizedDescription()->utf8String());
+        std::string errorMsg = "CommandBuffer execution failed. Error: " + std::string(pError->localizedDescription()->utf8String());
         throw std::runtime_error(errorMsg);
     } else if (status == MTL::CommandBufferStatusError) {
-        throw std::runtime_error("CommandBuffer execution failed with an unknown Metal error (Status is Error, no details captured)");
+        throw std::runtime_error("CommandBuffer failed with unknown Metal error (Status Error, no details).");
     } else if (status != MTL::CommandBufferStatusCompleted) {
         throw std::runtime_error("CommandBuffer finished with unexpected status: " + std::to_string(status));
     }
@@ -403,65 +545,237 @@ void saveImageData(const std::string& outputPath,
 // main function
 int main(int argc, const char * argv[]) {
 
-    std::cout << "Starting preliminary Metal Image Processor..." << std::endl;
+    std::cout << "Starting Metal Image Processor..." << std::endl;
 
-    // --- Configuration ---
-    std::string inputPath = "input.png";     // Image to load
-    std::string outputPath = "output.png";   // Image to save
-    std::string kernelName = "k_grayscale";  // Name of kernel function in .metal file
-    MTL::PixelFormat pixelFormat = MTL::PixelFormatRGBA8Unorm_sRGB; // sRGB pixel format
+    // --- Configuration (from arguments) ---
+    std::string inputPath;     // Image to load
+    std::string outputPath;   // Image to save
+    std::string kernelSequenceStr; // Comma-separated kernel names from user
+    std::vector<std::string> kernelSequence; // Parsed sequence of kernel names
+    // Use RGBA8Unorm for better compatibility with standard image processing math (normalized 0-1)
+    MTL::PixelFormat pixelFormat = MTL::PixelFormatRGBA8Unorm;
+    int benchmarkIterations = 0;
+    
+    // configure cxxopts (for CLI arguments)
+    cxxopts::Options options("MetalImageProcessor", "Applies Metal compute kernels to images.");
+    options.add_options()
+        ("i,input", "Input image file path", cxxopts::value<std::string>(inputPath))
+        ("o,output", "Output image file path", cxxopts::value<std::string>(outputPath))
+        ("k,kernels", "Comma-separated sequence of kernels (e.g., 'gaussian_blur_3x3,sharpen_3x3')",
+            cxxopts::value<std::string>(kernelSequenceStr)->default_value("grayscale"))
+        ("benchmark", "Number of iterations to benchmark Gaussian Blur 3x3 vs CPU", cxxopts::value<int>(benchmarkIterations)->default_value("0"))
+        ("h,help", "Print usage information");
+
+    std::vector<KernelInfo> selectedKernelInfos; // Store info for the sequence
+    std::vector<std::string> metalKernelNames; // Store Metal function names for the sequence
+    bool isBenchmarkMode = false;
+    
+    
+    try {
+        auto result = options.parse(argc, argv);
+
+        if (result.count("help")) {
+            std::cout << options.help() << std::endl;
+            std::cout << "\nAvailable kernels for -k/--kernels:" << std::endl;
+            for(const auto& pair : KERNEL_REGISTRY) { std::cout << "  - " << pair.first << std::endl; }
+            std::cout << "\nBenchmark mode (--benchmark N) always uses '" << BENCHMARK_KERNEL_USER_NAME << "'." << std::endl;
+            return 0;
+        }
+
+        if (!result.count("input")) throw std::runtime_error("Missing --input");
+        if (!result.count("output")) throw std::runtime_error("Missing --output");
+        if (!std::filesystem::exists(inputPath)) throw std::runtime_error("Input file not found: " + inputPath);
+
+        if (benchmarkIterations > 0) {
+            // Benchmark mode: Use N iterations of the hardcoded benchmark kernel
+            if (KERNEL_REGISTRY.find(BENCHMARK_KERNEL_USER_NAME) == KERNEL_REGISTRY.end()) {
+                 throw std::runtime_error("Internal error: Benchmark kernel '" + BENCHMARK_KERNEL_USER_NAME + "' not found in registry.");
+            }
+            for (int i = 0; i < benchmarkIterations; ++i) {
+                kernelSequence.push_back(BENCHMARK_KERNEL_USER_NAME);
+            }
+            isBenchmarkMode = true;
+            std::cout << "Benchmark Mode: Applying '" << BENCHMARK_KERNEL_USER_NAME << "' " << benchmarkIterations << " times." << std::endl;
+        } else {
+            // Normal mode: parse kernelSequenceStr from -k/--kernels
+            kernelSequence = split(kernelSequenceStr, ',');
+            if (kernelSequence.empty()) {
+                throw std::runtime_error("Kernel sequence is empty via -k/--kernels.");
+            }
+        }
+
+        std::cout << "Starting Metal Image Processor..." << std::endl;
+        std::cout << "  Input:  " << inputPath << std::endl;
+        std::cout << "  Output: " << outputPath << std::endl;
+        if (!isBenchmarkMode) std::cout << "  Kernel Sequence:" << std::endl;
+
+        // --- Prepare kernel info for the sequence (either benchmark or user-defined) ---
+        for (const auto& userKernelName : kernelSequence) {
+            if (KERNEL_REGISTRY.find(userKernelName) == KERNEL_REGISTRY.end()) {
+                throw std::runtime_error("Unknown kernel '" + userKernelName + "' in sequence.");
+            }
+            KernelInfo info = KERNEL_REGISTRY[userKernelName];
+            selectedKernelInfos.push_back(info);
+            std::string metalName = std::visit([](auto&& arg) -> std::string {
+                using T = std::decay_t<decltype(arg)>;
+                if constexpr (std::is_same_v<T, SimpleKernelInfo>) return arg.metalKernelName;
+                else if constexpr (std::is_same_v<T, ConvolutionInfo>) return arg.metalKernelName;
+                return "";
+            }, info);
+            if (metalName.empty()) throw std::runtime_error("Internal error: Metal kernel name missing for " + userKernelName);
+            metalKernelNames.push_back(metalName);
+            if (!isBenchmarkMode) std::cout << "    - " << userKernelName << " (using Metal function: " << metalName << ")" << std::endl;
+        }
+
+    } catch (const cxxopts::exceptions::exception& e) {
+        std::cerr << "Error parsing options: " << e.what() << std::endl; return 1;
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << std::endl; return 1;
+    }
+    
 
 
     // Memory Management
     // Declare Metal objects using NS::SharedPtr, so their lifetime will be automatically managed
     NS::SharedPtr<MTL::Device> pDevice;
-    NS::SharedPtr<MTL::Texture> pInputTexture;
-    NS::SharedPtr<MTL::Texture> pOutputTexture;
-    NS::SharedPtr<MTL::ComputePipelineState> pPSO;
+    NS::SharedPtr<MTL::Texture> pTextureA; // For ping-ponging
+    NS::SharedPtr<MTL::Texture> pTextureB; // For ping-ponging
+    NS::SharedPtr<MTL::SamplerState> pSamplerState; // Create once if any kernel needs it
+    // Map to store Pipeline State Objects, keyed by Metal kernel name to avoid recreation
+    std::map<std::string, NS::SharedPtr<MTL::ComputePipelineState>> psoCache;
+    
+    std::vector<unsigned char> cpuImageData, cpuOutputImageDataGpu, cpuOutputImageDataCpu;
+    int width = 0, height = 0;
 
     try {
         // 1. Initialize Metal Device (GPU)
         pDevice = setupMetalDevice();
 
         // 2. Load image from file into a vector on CPU memory
-        int width = 0, height = 0;
-        std::vector<unsigned char> cpuImageData;
         loadImageData(inputPath, width, height, cpuImageData);
         std::cout << "Loaded input image '" << inputPath << "' (" << width << "x" << height << ")." << std::endl;
 
         // 3. Create Metal Textures on the GPU
-        // Input texture: Shader will read from it
-        pInputTexture = createMetalTexture(pDevice, width, height, pixelFormat, MTL::TextureUsageShaderRead);
-        // Output texture: Shader will write to it
-        pOutputTexture = createMetalTexture(pDevice, width, height, pixelFormat, MTL::TextureUsageShaderWrite);
-        std::cout << "Created Metal input and output textures on device." << std::endl;
+        // Input texture usage depends on kernel type (read for grayscale, sample for convolution)
+        MTL::TextureUsage textureUsage = MTL::TextureUsageShaderRead | MTL::TextureUsageShaderWrite;
+        bool needsSampling = false;
+        for (const auto& info : selectedKernelInfos) {
+             if (std::holds_alternative<ConvolutionInfo>(info) ||
+                 (std::holds_alternative<SimpleKernelInfo>(info) && std::get<SimpleKernelInfo>(info).metalKernelName == "k_edge_detect"))
+             {
+                 needsSampling = true;
+                 // Sampling requires ShaderRead usage, which is already included.
+                 break;
+             }
+        }
+        
+        pTextureA = createMetalTexture(pDevice, width, height, pixelFormat, textureUsage);
+        pTextureB = createMetalTexture(pDevice, width, height, pixelFormat, textureUsage);
+        std::cout << "Created Metal processing textures A and B on device." << std::endl;
+        
+        // start benchmark timing
+        auto gpu_start_time = std::chrono::high_resolution_clock::now();
 
         // 4. Upload CPU image data to the input GPU texture
-        uploadImageDataToTexture(cpuImageData, pInputTexture);
-        std::cout << "Uploaded image data to input texture." << std::endl;
+        uploadImageDataToTexture(cpuImageData, pTextureA);
+        std::cout << "Uploaded initial image data to texture A." << std::endl;
 
-
-        // 5. Load and compile the Metal kernel into a Pipeline State Object (PSO)
-        pPSO = setupPipelineState(pDevice, kernelName);
-        std::cout << "Setup compute pipeline state for kernel: '" << kernelName << "'." << std::endl;
-
+        // 5. Create Sampler State (only if needed)
+        if (needsSampling) {
+             pSamplerState = createSamplerState(pDevice);
+             std::cout << "Created sampler state." << std::endl;
+        }
         
-        // 6. Run the kernel: Encode commands, submit, wait for completion.
-        runSampleKernel(pDevice, pPSO, pInputTexture, pOutputTexture);
-        std::cout << "Metal kernel execution complete." << std::endl;
+        // 6. Process the kernel sequence
+        NS::SharedPtr<MTL::Texture> pCurrentInputTexture = pTextureA;
+        NS::SharedPtr<MTL::Texture> pCurrentOutputTexture = pTextureB;
+        
+        for (size_t i = 0; i < kernelSequence.size(); ++i) {
+            const std::string& metalKernelName = metalKernelNames[i];
+            const KernelInfo& kernelInfo = selectedKernelInfos[i];
+            if (!isBenchmarkMode) std::cout << "\nApplying GPU filter " << (i + 1) << "/" << kernelSequence.size() << ": '" << kernelSequence[i] << "'..." << std::endl;
+
+
+
+            // 6a. Get or create the Pipeline State Object (PSO)
+            NS::SharedPtr<MTL::ComputePipelineState> pCurrentPSO;
+            if (psoCache.count(metalKernelName)) {
+                pCurrentPSO = psoCache[metalKernelName];
+                std::cout << "  Using cached PSO for '" << metalKernelName << "'." << std::endl;
+            } else {
+                pCurrentPSO = setupPipelineState(pDevice, metalKernelName);
+                psoCache[metalKernelName] = pCurrentPSO; // Cache it
+                std::cout << "  Created and cached PSO for '" << metalKernelName << "'." << std::endl;
+            }
+
+            // 6b. Get pointer to ConvolutionInfo if needed
+            const ConvolutionInfo* pConvInfoPtr = std::get_if<ConvolutionInfo>(&kernelInfo);
+
+            // 6c. Run the kernel
+            runComputeKernel(pDevice, pCurrentPSO,
+                             pCurrentInputTexture, pCurrentOutputTexture, // Pass current input/output
+                             pSamplerState,        // Pass sampler (null if not created)
+                             pConvInfoPtr);        // Pass conv info (null if not needed)
+
+            // 6d. Swap textures for the next iteration (Ping-Pong)
+            std::swap(pCurrentInputTexture, pCurrentOutputTexture);
+        }
+        cpuOutputImageDataGpu.resize(static_cast<size_t>(width) * height * 4);
+        std::cout << "\nExecution of filter sequence complete." << std::endl;
 
         
         // 7. Download processed data from the output GPU texture back to CPU memory
-        std::vector<unsigned char> cpuOutputImageData;
-        cpuOutputImageData.resize(static_cast<size_t>(width) * height * 4);
-        downloadTextureData(pOutputTexture, cpuOutputImageData);
-        std::cout << "Downloaded processed data from output texture." << std::endl;
+        cpuOutputImageDataGpu.resize(static_cast<size_t>(width) * height * 4);
+        downloadTextureData(pCurrentInputTexture, cpuOutputImageDataGpu); // Download from the last input texture
+        std::cout << "Downloaded processed data." << std::endl;
+        
+        // end benchmark timing
+        auto gpu_end_time = std::chrono::high_resolution_clock::now();
+        auto gpu_duration = std::chrono::duration_cast<std::chrono::milliseconds>(gpu_end_time - gpu_start_time);
+
 
         // 8. Save the processed CPU image data to a file
-        saveImageData(outputPath, width, height, cpuOutputImageData);
+        saveImageData(outputPath, width, height, cpuOutputImageDataGpu);
         std::cout << "Saved output image to: '" << outputPath << "'." << std::endl;
 
-        std::cout << "Processing complete..." << std::endl;
+        // --- CPU Benchmarking (if flag enabled) ---
+        if (isBenchmarkMode) {
+            std::cout << "\n--- Benchmark Results for " << benchmarkIterations << " applications of '" << BENCHMARK_KERNEL_USER_NAME << "' ---" << std::endl;
+            std::cout << "GPU Total Time (upload + " << benchmarkIterations << " kernels + download): " << gpu_duration.count() << " ms" << std::endl;
+
+            // CPU Timing
+            std::cout << "Running CPU benchmark..." << std::endl;
+            cpuOutputImageDataCpu = cpuImageData; // Start with a fresh copy
+
+            auto cpu_start_time = std::chrono::high_resolution_clock::now();
+            for (int i = 0; i < benchmarkIterations; ++i) {
+                // cpuGaussianBlur3x3 modifies in place. For N iterations, apply N times sequentially.
+                 if (i == 0) {
+                    cpuOutputImageDataCpu = cpuImageData; // Use original for first pass
+                    cpuGaussianBlur3x3(cpuOutputImageDataCpu, width, height);
+                 } else {
+                    // cpuOutputImageDataCpu holds result from iteration i-1
+                    cpuGaussianBlur3x3(cpuOutputImageDataCpu, width, height);
+                 }
+            }
+            auto cpu_end_time = std::chrono::high_resolution_clock::now();
+            auto cpu_duration = std::chrono::duration_cast<std::chrono::milliseconds>(cpu_end_time - cpu_start_time);
+
+            std::cout << "CPU Total Time (" << benchmarkIterations << " kernels): " << cpu_duration.count() << " ms" << std::endl;
+
+            // Comparison
+            if (benchmarkIterations > 0) {
+                double gpu_avg = static_cast<double>(gpu_duration.count()) / benchmarkIterations; // Rough avg including I/O split
+                double cpu_avg = static_cast<double>(cpu_duration.count()) / benchmarkIterations;
+                std::cout << "Approx Average Time per iteration: GPU ~= " << gpu_avg << " ms, CPU = " << cpu_avg << " ms" << std::endl;
+                if (gpu_duration.count() > 0 && cpu_duration.count() > 0) {
+                     std::cout << "CPU / GPU (Total Time Ratio): " << static_cast<double>(cpu_duration.count()) / gpu_duration.count() << std::endl;
+                }
+            }
+            saveImageData("output_cpu_benchmark.png", width, height, cpuOutputImageDataCpu);
+        } else {
+             std::cout << "Processing complete." << std::endl;
+        }
 
     } catch (const std::exception& e) {
         // Catch standard C++ exceptions
